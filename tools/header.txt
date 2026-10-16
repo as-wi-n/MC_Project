@@ -1,0 +1,71 @@
+/*
+ * ESP8266 as an SWD debug probe for STM32 / Cortex-M targets.
+ * Ported from ESP32SWDProbe (github.com/jithurx/mcproject) to ESP8266.
+ *
+ * SERIAL-ONLY: the host talks to this probe over the USB serial port.
+ * No WiFi is used. See host/flash_stm32.py.
+ *
+ * Wiring to target (STM32 Blue Pill / F103):
+ *   SWDIO (GPIO13 / D7) -> PA13 (SWDIO / JTMS)
+ *   SWCLK (GPIO12 / D6) -> PA14 (SWCLK / JTCK)
+ *   NRST  (GPIO14 / D5) -> NRST   (optional, active-low reset)
+ *   GND                 -> GND    (mandatory, common ground)
+ *
+ * The ESP8266 has no USB peripheral: the micro-USB port only drives a
+ * CH340/CP2102 USB-to-UART bridge. All host<->probe traffic therefore goes
+ * over that UART; SWD itself is bit-banged on the GPIOs above.
+ *
+ * Native binary protocol (same as the ESP32 probe, see handle_native_cmd):
+ *   one command byte, optional body, reply = <status,u8><detail,u8> + payload.
+ */
+
+#include <Arduino.h>
+#include <string.h>
+#include <stdlib.h>
+
+/* ---- Pin map (NodeMCU/D1 mini names in comments) ---- */
+static const uint8_t PIN_SWCLK = 12;   /* D6 */
+static const uint8_t PIN_SWDIO = 13;   /* D7 */
+static const uint8_t PIN_NRST  = 14;   /* D5 */
+static const uint8_t PIN_LED   = 2;    /* D4 (onboard LED, active-low) */
+
+static bool swdio_output = false;
+static bool blink_active = false;
+
+/* When the serial command channel is in use, debug prints would corrupt the
+ * binary protocol on the shared UART, so they are suppressed. */
+static bool serial_cmd_active = false;
+#define DBG_PRINT(...)   do { if (!serial_cmd_active) Serial.print(__VA_ARGS__); } while (0)
+#define DBG_PRINTLN(...) do { if (!serial_cmd_active) Serial.println(__VA_ARGS__); } while (0)
+
+static uint32_t cur_select = 0xFFFFFFFF;
+static uint32_t g_dpidr = 0;   /* last DPIDR seen (CKS32 clones differ) */
+
+/* Direct GPIO register access on ESP8266, to bypass digitalWrite/digitalRead
+ * overhead. GPIO_OUT_W1TS/W1TC are write-1-to-set / write-1-to-clear. */
+#define ESP_GPIO_OUT_W1TS 0x60000304u
+#define ESP_GPIO_OUT_W1TC 0x60000308u
+#define ESP_GPIO_IN       0x60000318u
+
+static inline void gpio_fast_set(uint8_t pin, bool high)
+{
+    volatile uint32_t *reg = (volatile uint32_t *)(high ? ESP_GPIO_OUT_W1TS
+                                                        : ESP_GPIO_OUT_W1TC);
+    *reg = (1UL << pin);
+}
+
+static inline bool gpio_fast_get(uint8_t pin)
+{
+    return (*(volatile uint32_t *)ESP_GPIO_IN >> pin) & 1;
+}
+
+/* Tunable settle time between GPIO edges (ESP8266 runs at 80 MHz).
+ * Raise if the link is unstable over long jumper wires; the target is
+ * clocked by us, so a slower clock is always safe -- just slower. */
+static uint32_t swd_delay_cycles = 100;
+
+static inline void swd_delay(void)
+{
+    for (volatile uint32_t i = 0; i < swd_delay_cycles; i++) {
+    }
+}

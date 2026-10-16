@@ -1,0 +1,43 @@
+
+
+void setup()
+{
+    pinMode(PIN_SWCLK, OUTPUT);
+    pinMode(PIN_SWDIO, OUTPUT);
+    pinMode(PIN_NRST,  OUTPUT);
+    pinMode(PIN_LED,   OUTPUT);
+    digitalWrite(PIN_SWCLK, HIGH);
+    digitalWrite(PIN_SWDIO, HIGH);
+    digitalWrite(PIN_NRST,  HIGH);
+    digitalWrite(PIN_LED,   HIGH);   /* active-low on ESP8266: HIGH = off */
+
+    Serial.begin(115200);
+    delay(200);
+    Serial.println();
+    Serial.println("ESP8266 ST-Link probe (serial-only) starting...");
+    Serial.print("SWCLK=GPIO"); Serial.print(PIN_SWCLK);
+    Serial.print("  SWDIO=GPIO"); Serial.print(PIN_SWDIO);
+    Serial.print("  NRST=GPIO"); Serial.println(PIN_NRST);
+
+    /* A serial link has no per-client "connect" event, so release any stale
+     * debug-halt state left on the target right at boot. Best-effort: does
+     * nothing if no target is wired/powered yet. */
+    cortex_cleanup();
+
+    Serial.println("Ready. Waiting for host commands...");
+}
+
+void loop()
+{
+    /* Serial command channel: native binary protocol, no WiFi needed. */
+    if (Serial.available()) {
+        serial_cmd_active = true;
+        char cmd = (char)Serial.read();
+        /* 'Q' and remote_bitbang single-char commands are ignored here;
+         * the host client only speaks the native binary protocol. */
+        if (cmd != 'Q' && !strchr("01234567RrstuOocdefgZzBb", cmd)) {
+            handle_native_cmd(cmd, Serial);
+        }
+    }
+    yield();
+}

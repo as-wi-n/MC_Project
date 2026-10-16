@@ -1,0 +1,11 @@
+# --- Build artifacts (huge linker maps; the .bin/.elf/.hex are kept on purpose) ---
+*.map
+
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Editors / OS ---
+.vscode/
+Thumbs.db
+Desktop.ini
